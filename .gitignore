@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+models/**/*.pth
+models/**/dataset.json
+models/**/plans.json
+releases/
+tests/
