@@ -4,9 +4,9 @@ Research pipeline for one contrast-enhanced chest CT NIfTI. It creates the
 Dataset546-compatible thoracic crop and artery prior, performs the five-fold
 nnU-Net ensemble, calculates RV/LV, assigns PE-RADS, and renders a preview.
 
-## Installazione
+## Installation
 
-Il repository è privato: è necessario avere accesso a GitHub `eziolanza/perads-net`.
+The repository is private: users must have access to GitHub `eziolanza/perads-net`.
 
 ```bash
 git clone git@github.com:eziolanza/perads-net.git
@@ -14,19 +14,20 @@ cd perads-net
 pip install -r requirements.txt
 ```
 
-Scaricare quindi il bundle privato del modello dalla release `v0.1.0`:
+Download the private model bundle from the `v0.1.0` release:
 
 ```bash
 wget https://github.com/eziolanza/perads-net/releases/download/v0.1.0/PERADS.net-model-v0.1.0.tar.zst
 tar --use-compress-program=unzstd -xf PERADS.net-model-v0.1.0.tar.zst
 ```
 
-L’archivio crea automaticamente la cartella `models/` richiesta dal runner.
-Sono necessari anche una GPU NVIDIA con CUDA e i comandi `TotalSegmentator`
-e `nnUNetv2_predict_from_modelfolder` disponibili nel sistema.
+The archive automatically creates the `models/` directory required by the runner.
+An NVIDIA GPU with CUDA is also required, together with the
+`TotalSegmentator` and `nnUNetv2_predict_from_modelfolder` commands available
+on the system.
 
-Il modello contiene esclusivamente i pesi necessari all’inferenza; non è
-necessario scaricare il dataset di addestramento o il Dataset 120.
+The model bundle contains only the weights required for inference; the training
+dataset and Dataset 120 do not need to be downloaded.
 
 Run on the local GPU, outside the sandbox:
 
