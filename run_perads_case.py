@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -24,7 +26,7 @@ from rvlv_v2 import calculate as calculate_rvlv
 
 PROJECT = Path("/media/ezio/Boatta2TB/nnunet_projects")
 PACKAGE_ROOT = Path(__file__).resolve().parent
-DEFAULT_MODEL = PACKAGE_ROOT / "models/Dataset546_PEArteryPrior/nnUNetTrainer__nnUNetPlans__3d_fullres"
+DEFAULT_MODEL = PROJECT / "PERADS/models/perads-net/Dataset546_PEArteryPrior/nnUNetTrainer__nnUNetPlans__3d_fullres"
 THRESHOLDS = {"central": 0.516, "lobar": 0.358, "segmental": 0.270}
 OVERLAP = 0.01
 
@@ -32,6 +34,17 @@ OVERLAP = 0.01
 def run(command: list[str]) -> None:
     print("+", " ".join(command), flush=True)
     subprocess.run(command, check=True)
+
+
+def require_totalsegmentator_v1(executable: str) -> None:
+    check = subprocess.run([executable, "--version"], capture_output=True, text=True)
+    version = f"{check.stdout}\n{check.stderr}"
+    match = re.search(r"(?:TotalSegmentator[- ]?)?(\d+)\.", version)
+    if check.returncode != 0 or not match or match.group(1) != "1":
+        raise RuntimeError(
+            "PERADS.net requires TotalSegmentator v1.x (task total, no license). "
+            f"Executable '{executable}' returned: {version.strip() or 'no version information'}"
+        )
 
 
 def save_crop(image: nib.spatialimages.SpatialImage, slices: tuple[slice, ...], path: Path) -> None:
@@ -110,6 +123,11 @@ def main() -> None:
     parser.add_argument("--case-id", help="Optional output identifier; defaults to input filename")
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--totalsegmentator",
+        default=os.environ.get("PERADS_TOTALSEGMENTATOR", "TotalSegmentator"),
+        help="Path to the TotalSegmentator v1 executable (or set PERADS_TOTALSEGMENTATOR).",
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
     ct_path = args.input.resolve(); output = args.output.resolve()
@@ -118,15 +136,22 @@ def main() -> None:
     if output.exists() and any(output.iterdir()) and not args.overwrite:
         parser.error(f"Output exists and is not empty: {output} (use --overwrite to reuse it)")
     if not args.model.is_dir(): parser.error(f"nnU-Net model not found: {args.model}")
+    require_totalsegmentator_v1(args.totalsegmentator)
     output.mkdir(parents=True, exist_ok=True)
     ts_lung, ts_heart = output / "01_totalsegmentator/lung_vessels", output / "01_totalsegmentator/heartchambers"
     pre, inference, final = output / "02_preprocessed", output / "03_embolus", output / "04_results"
     raw = nib.load(str(ct_path)); raw_shape = raw.shape
     lung_masks = [ts_lung / name for name in ("lung_airways.nii.gz", "lung_arteries.nii.gz", "lung_veins.nii.gz")]
-    ts_device = "gpu" if args.device == "cuda" else "cpu"
-    if not all(path.exists() for path in lung_masks): run(["TotalSegmentator", "-i", str(ct_path), "-o", str(ts_lung), "-ta", "lung_vessels", "-d", ts_device])
+    ts_v1_marker = output / "01_totalsegmentator/.perads_totalsegmentator_v1"
+    if not all(path.exists() for path in lung_masks):
+        run([args.totalsegmentator, "-i", str(ct_path), "-o", str(ts_lung), "-ta", "lung_vessels"])
     rv, lv = ts_heart / "heart_ventricle_right.nii.gz", ts_heart / "heart_ventricle_left.nii.gz"
-    if not (rv.exists() and lv.exists()): run(["TotalSegmentator", "-i", str(ct_path), "-o", str(ts_heart), "-ta", "heartchambers_highres", "-d", ts_device])
+    if not (rv.exists() and lv.exists()) or not ts_v1_marker.exists():
+        run([
+            args.totalsegmentator, "-i", str(ct_path), "-o", str(ts_heart),
+            "-ta", "total", "-rs", "heart_ventricle_right", "heart_ventricle_left",
+        ])
+        ts_v1_marker.write_text("TotalSegmentator v1 task=total\n")
     slices = crop_slices(lung_masks, raw_shape)
     images = pre / "imagesTs"; images.mkdir(parents=True, exist_ok=True)
     cropped_ct, cropped_prior, cropped_arteries = images / f"{case_id}_0000.nii.gz", images / f"{case_id}_0001.nii.gz", pre / "lung_arteries.nii.gz"

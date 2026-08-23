@@ -21,10 +21,18 @@ wget https://github.com/eziolanza/perads-net/releases/download/v0.1.0/PERADS.net
 tar --use-compress-program=unzstd -xf PERADS.net-model-v0.1.0.tar.zst
 ```
 
-The archive automatically creates the `models/` directory required by the runner.
+The model bundle should be extracted under `PERADS/models/perads-net/`.
 An NVIDIA GPU with CUDA is also required, together with the
-`TotalSegmentator` and `nnUNetv2_predict_from_modelfolder` commands available
-on the system.
+`nnUNetv2_predict_from_modelfolder` available on the system and a separate
+TotalSegmentator v1 environment. PERADS.net uses only the v1 `total` task for
+the heart chambers; this does not require a TotalSegmentator license.
+
+Install TotalSegmentator v1 in its isolated environment from
+`requirements-totalsegmentator-v1.txt`, then point the runner to its executable:
+
+```bash
+export PERADS_TOTALSEGMENTATOR=/absolute/path/to/v1-env/bin/TotalSegmentator
+```
 
 The model bundle contains only the weights required for inference; the training
 dataset and Dataset 120 do not need to be downloaded.
@@ -48,8 +56,11 @@ Key outputs in `04_results/`:
 
 The RV/LV v2 implementation is included locally in `rvlv_v2.py` and is the
 same method used for Dataset 120. Remaining requirements are the local
-`TotalSegmentator` and `nnUNetv2_predict_from_modelfolder` commands; the trained model at
-`models/Dataset546_PEArteryPrior/nnUNetTrainer__nnUNetPlans__3d_fullres`.
+`nnUNetv2_predict_from_modelfolder` command and the trained model at
+`PERADS/models/perads-net/Dataset546_PEArteryPrior/nnUNetTrainer__nnUNetPlans__3d_fullres`.
 The script accepts `--model` to override this location.
+
+Test cases and comparison previews are kept separately under
+`PERADS/experiments/perads-net/`.
 
 This is a research pipeline and requires visual QC; it is not for clinical use.
