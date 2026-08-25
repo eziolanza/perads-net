@@ -75,10 +75,16 @@ def hierarchy(arteries: np.ndarray, spacing: np.ndarray) -> np.ndarray:
 
 
 def create_preview(ct: Path, embolus: Path, rv: Path, lv: Path, rvlv: dict, result: dict, destination: Path) -> None:
-    ct_data = np.asanyarray(nib.load(ct).dataobj)
-    pe = np.asanyarray(nib.load(embolus).dataobj) > 0
-    rv_data = np.asanyarray(nib.load(rv).dataobj) > 0
-    lv_data = np.asanyarray(nib.load(lv).dataobj) > 0
+    # NIfTI files from the pipeline are not guaranteed to be stored as
+    # (x, y, axial-z). Reorient every layer through the affine first so the
+    # preview is always a true axial (R-L, A-P) view.
+    def canonical_array(path: Path) -> np.ndarray:
+        return np.asanyarray(nib.as_closest_canonical(nib.load(path)).dataobj)
+
+    ct_data = canonical_array(ct)
+    pe = canonical_array(embolus) > 0
+    rv_data = canonical_array(rv) > 0
+    lv_data = canonical_array(lv) > 0
     pe_counts = pe.sum(axis=(0, 1))
     if pe.any():
         positive_slices = np.flatnonzero(pe_counts)
@@ -86,7 +92,8 @@ def create_preview(ct: Path, embolus: Path, rv: Path, lv: Path, rvlv: dict, resu
         pe_slices = [int(positive_slices[np.argmin(np.abs(positive_slices - target))]) for target in targets]
     else:
         pe_slices = [ct_data.shape[2] // 2] * 5
-    rv_z = int(rvlv["selected_slice_z"])
+    chamber_counts = (rv_data | lv_data).sum(axis=(0, 1))
+    rv_z = int(np.argmax(chamber_counts)) if chamber_counts.any() else ct_data.shape[2] // 2
     figure, axes = plt.subplots(2, 3, figsize=(14, 9), facecolor="black")
     figure.suptitle(f"PE-RADS {result['perads_grade']} — {result['anatomic_level'].capitalize()}  |  RV/LV {rvlv['ratio_axial_same_slice']:.2f}", color="white", fontsize=16, weight="bold")
     for number, (axis, z) in enumerate(zip(axes.flat[:5], pe_slices), 1):
@@ -97,10 +104,11 @@ def create_preview(ct: Path, embolus: Path, rv: Path, lv: Path, rvlv: dict, resu
     rvlv_axis.imshow(ct_data[:, :, rv_z].T, cmap="gray", vmin=-160, vmax=240, origin="lower")
     rvlv_axis.contour(rv_data[:, :, rv_z].T, [0.5], colors=["#ef4444"], linewidths=2)
     rvlv_axis.contour(lv_data[:, :, rv_z].T, [0.5], colors=["#3b82f6"], linewidths=2)
-    for chord, color in ((rvlv["rv_chord"], "#facc15"), (rvlv["lv_chord"], "#22d3ee")):
-        (x0, y0), (x1, y1) = chord["endpoints_px"]
-        rvlv_axis.plot((x0, x1), (y0, y1), color=color, linewidth=2.5)
-    rvlv_axis.set_title(f"RV rosso · LV blu · z={rv_z}", color="white"); rvlv_axis.axis("off")
+    rvlv_axis.set_title(
+        f"RV rosso · LV blu · assiale z={rv_z} · "
+        f"RV {result['rv_diameter_mm']:.1f} mm · LV {result['lv_diameter_mm']:.1f} mm",
+        color="white",
+    ); rvlv_axis.axis("off")
     figure.tight_layout(rect=(0, 0, 1, .95)); figure.savefig(destination, dpi=160, facecolor="black"); plt.close(figure)
 
 
