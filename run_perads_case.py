@@ -79,7 +79,10 @@ def create_preview(ct: Path, embolus: Path, rv: Path, lv: Path, rvlv: dict, resu
     # (x, y, axial-z). Reorient every layer through the affine first so the
     # preview is always a true axial (R-L, A-P) view.
     def canonical_array(path: Path) -> np.ndarray:
-        return np.asanyarray(nib.as_closest_canonical(nib.load(path)).dataobj)
+        data = np.asanyarray(nib.as_closest_canonical(nib.load(path)).dataobj)
+        # Radiological display convention: patient's right appears on the
+        # left side of the image, as in the review viewer.
+        return np.flip(data, axis=0)
 
     ct_data = canonical_array(ct)
     pe = canonical_array(embolus) > 0
