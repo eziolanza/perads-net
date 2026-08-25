@@ -23,16 +23,10 @@ tar --use-compress-program=unzstd -xf PERADS.net-model-v0.1.0.tar.zst
 
 The model bundle should be extracted under `PERADS/models/perads-net/`.
 An NVIDIA GPU with CUDA is also required, together with the
-`nnUNetv2_predict_from_modelfolder` available on the system and a separate
-TotalSegmentator v1 environment. PERADS.net uses only the v1 `total` task for
-the heart chambers; this does not require a TotalSegmentator license.
-
-Install TotalSegmentator v1 in its isolated environment from
-`requirements-totalsegmentator-v1.txt`, then point the runner to its executable:
-
-```bash
-export PERADS_TOTALSEGMENTATOR=/absolute/path/to/v1-env/bin/TotalSegmentator
-```
+`TotalSegmentator` and `nnUNetv2_predict_from_modelfolder` available on the
+system. PERADS.net uses the current TotalSegmentator
+`heartchambers_highres` task for RV/LV segmentation, together with the
+`lung_vessels` preprocessing task. Both tasks are run on the selected GPU.
 
 The model bundle contains only the weights required for inference; the training
 dataset and Dataset 120 do not need to be downloaded.

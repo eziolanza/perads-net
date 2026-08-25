@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -33,18 +32,7 @@ OVERLAP = 0.01
 
 def run(command: list[str]) -> None:
     print("+", " ".join(command), flush=True)
-    subprocess.run(command, check=True)
-
-
-def require_totalsegmentator_v1(executable: str) -> None:
-    check = subprocess.run([executable, "--version"], capture_output=True, text=True)
-    version = f"{check.stdout}\n{check.stderr}"
-    match = re.search(r"(?:TotalSegmentator[- ]?)?(\d+)\.", version)
-    if check.returncode != 0 or not match or match.group(1) != "1":
-        raise RuntimeError(
-            "PERADS.net requires TotalSegmentator v1.x (task total, no license). "
-            f"Executable '{executable}' returned: {version.strip() or 'no version information'}"
-        )
+    subprocess.run(command, check=True, env=os.environ.copy())
 
 
 def save_crop(image: nib.spatialimages.SpatialImage, slices: tuple[slice, ...], path: Path) -> None:
@@ -126,7 +114,7 @@ def main() -> None:
     parser.add_argument(
         "--totalsegmentator",
         default=os.environ.get("PERADS_TOTALSEGMENTATOR", "TotalSegmentator"),
-        help="Path to the TotalSegmentator v1 executable (or set PERADS_TOTALSEGMENTATOR).",
+        help="TotalSegmentator executable used for lung_vessels and heartchambers_highres.",
     )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
@@ -136,22 +124,23 @@ def main() -> None:
     if output.exists() and any(output.iterdir()) and not args.overwrite:
         parser.error(f"Output exists and is not empty: {output} (use --overwrite to reuse it)")
     if not args.model.is_dir(): parser.error(f"nnU-Net model not found: {args.model}")
-    require_totalsegmentator_v1(args.totalsegmentator)
     output.mkdir(parents=True, exist_ok=True)
     ts_lung, ts_heart = output / "01_totalsegmentator/lung_vessels", output / "01_totalsegmentator/heartchambers"
     pre, inference, final = output / "02_preprocessed", output / "03_embolus", output / "04_results"
     raw = nib.load(str(ct_path)); raw_shape = raw.shape
     lung_masks = [ts_lung / name for name in ("lung_airways.nii.gz", "lung_arteries.nii.gz", "lung_veins.nii.gz")]
-    ts_v1_marker = output / "01_totalsegmentator/.perads_totalsegmentator_v1"
+    ts_heart_marker = output / "01_totalsegmentator/.perads_heartchambers_highres"
     if not all(path.exists() for path in lung_masks):
-        run([args.totalsegmentator, "-i", str(ct_path), "-o", str(ts_lung), "-ta", "lung_vessels"])
+        ts_device = "gpu" if args.device == "cuda" else "cpu"
+        run([args.totalsegmentator, "-i", str(ct_path), "-o", str(ts_lung), "-ta", "lung_vessels", "-d", ts_device])
     rv, lv = ts_heart / "heart_ventricle_right.nii.gz", ts_heart / "heart_ventricle_left.nii.gz"
-    if not (rv.exists() and lv.exists()) or not ts_v1_marker.exists():
+    if not (rv.exists() and lv.exists()) or not ts_heart_marker.exists():
+        ts_device = "gpu" if args.device == "cuda" else "cpu"
         run([
             args.totalsegmentator, "-i", str(ct_path), "-o", str(ts_heart),
-            "-ta", "total", "-rs", "heart_ventricle_right", "heart_ventricle_left",
+            "-ta", "heartchambers_highres", "-d", ts_device,
         ])
-        ts_v1_marker.write_text("TotalSegmentator v1 task=total\n")
+        ts_heart_marker.write_text("TotalSegmentator task=heartchambers_highres\n")
     slices = crop_slices(lung_masks, raw_shape)
     images = pre / "imagesTs"; images.mkdir(parents=True, exist_ok=True)
     cropped_ct, cropped_prior, cropped_arteries = images / f"{case_id}_0000.nii.gz", images / f"{case_id}_0001.nii.gz", pre / "lung_arteries.nii.gz"

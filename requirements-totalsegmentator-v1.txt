@@ -1,2 +1,0 @@
-# Install this in a separate environment from the nnU-Net v2 runtime.
-TotalSegmentator==1.5.7
