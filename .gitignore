@@ -5,3 +5,18 @@ models/**/dataset.json
 models/**/plans.json
 releases/
 tests/
+
+# Exploratory research history (A-F method comparison, batch/preview
+# scripts) -- kept locally for reproducibility of the ablation, not part
+# of the published pipeline.
+archive/
+
+# Per-case / per-run outputs (CT-derived, never committed)
+*.nii.gz
+*.nii
+output/
+outputs/
+results/
+*.csv
+
+.DS_Store
