@@ -6,7 +6,7 @@ ratio out, in one process, one CSV row.
 
 Steps: TotalSegmentator (lung_vessels, heartchambers_highres, total -rs
 5-lobes) on the raw CT -> crop once for nnU-Net -> nnU-Net 5-fold embolus
-segmentation (hard-mask, 30mm3 minimum volume) -> named-artery branch-tree
+segmentation (30mm3 minimum volume) -> named-artery branch-tree
 PE-RADS classification (main pulmonary trunk / right or left PA / lobar /
 segmental / subsegmental, per lung lobe) -> four-chamber RV/LV ratio ->
 result.json + structure_labelmap.nii.gz + one CSV row.
@@ -409,15 +409,19 @@ def create_labelmap(arteries: np.ndarray, records: dict) -> np.ndarray:
     return labelmap
 
 
-def compute_perads_grade(classified_embolus: np.ndarray, perads_labelmap: np.ndarray,
+def compute_perads_grade(embolus: np.ndarray, perads_labelmap: np.ndarray,
                          voxel_volume_mm3: float) -> dict:
     """Grade = most central PE-RADS class (4=main/right/left ... 1=subsegmental)
     holding at least OVERLAP fraction of the embolus, once total volume
-    clears MIN_EMBOLUS_VOLUME_MM3."""
-    total = int(classified_embolus.sum())
+    clears MIN_EMBOLUS_VOLUME_MM3. Uses the raw nnU-Net prediction directly
+    (no arterial hard-mask): anatomic siting still comes only from overlap
+    with `perads_labelmap`, which itself is nonzero only inside the artery
+    tree, so non-arterial prediction voxels never count toward a class --
+    they only enlarge the reported bcv_mm3 and the fraction denominator."""
+    total = int(embolus.sum())
     bcv_mm3 = total * voxel_volume_mm3
 
-    fractions = {c: (int((classified_embolus & (perads_labelmap == c)).sum()) / total if total else 0.0)
+    fractions = {c: (int((embolus & (perads_labelmap == c)).sum()) / total if total else 0.0)
                  for c in (4, 3, 2, 1)}
 
     if bcv_mm3 < MIN_EMBOLUS_VOLUME_MM3:
@@ -430,7 +434,7 @@ def compute_perads_grade(classified_embolus: np.ndarray, perads_labelmap: np.nda
         'perads_grade': grade,
         'anatomic_level': PE_CLASS_NAMES.get(grade, "none"),
         'classification_reason': reason,
-        'embolic_voxels_hardmask': total,
+        'embolic_voxels': total,
         'bcv_mm3': round(bcv_mm3, 3),
         'voxel_volume_mm3': round(voxel_volume_mm3, 6),
         'minimum_embolus_volume_mm3': MIN_EMBOLUS_VOLUME_MM3,
@@ -439,18 +443,18 @@ def compute_perads_grade(classified_embolus: np.ndarray, perads_labelmap: np.nda
     }
 
 
-def compute_grade_with_named_site(labelmap: np.ndarray, classified_embolus: np.ndarray,
+def compute_grade_with_named_site(labelmap: np.ndarray, embolus: np.ndarray,
                                   voxel_volume_mm3: float) -> dict:
-    """PE-RADS grade via the hard-mask/threshold/overlap rule above, applied
-    to F's 19 named structures collapsed down to the 4 standard PE-RADS
-    proximity classes. Also reports WHICH specific named structure(s) at the
-    winning class actually carry the embolus."""
+    """PE-RADS grade via the threshold/overlap rule above, applied to F's 19
+    named structures collapsed down to the 4 standard PE-RADS proximity
+    classes. Also reports WHICH specific named structure(s) at the winning
+    class actually carry the embolus."""
     code_to_class = {STRUCTURE_CODES[name]: cls for name, cls in PERADS_CLASS.items()}
     perads_labelmap = np.zeros(labelmap.shape, dtype=np.uint8)
     for code, cls in code_to_class.items():
         perads_labelmap[labelmap == code] = cls
 
-    grade_info = compute_perads_grade(classified_embolus, perads_labelmap, voxel_volume_mm3)
+    grade_info = compute_perads_grade(embolus, perads_labelmap, voxel_volume_mm3)
     grade = grade_info["perads_grade"]
 
     named_sites = []
@@ -459,7 +463,7 @@ def compute_grade_with_named_site(labelmap: np.ndarray, classified_embolus: np.n
             if cls != grade:
                 continue
             code = STRUCTURE_CODES[name]
-            count = int((classified_embolus & (labelmap == code)).sum())
+            count = int((embolus & (labelmap == code)).sum())
             if count > 0:
                 named_sites.append((name, count))
         named_sites.sort(key=lambda x: -x[1])
@@ -547,9 +551,8 @@ def process_case(ct_path: Path, output_dir: Path, case_id: str, *, model: Path =
     labelmap = create_labelmap(arteries, records)
 
     embolus = align_embolus_to_arteries(prediction, arteries.shape, affine)
-    classified_embolus = embolus & (arteries_raw > 0)
     voxel_volume_mm3 = float(np.prod(spacing))
-    grade_info = compute_grade_with_named_site(labelmap, classified_embolus, voxel_volume_mm3)
+    grade_info = compute_grade_with_named_site(labelmap, embolus, voxel_volume_mm3)
 
     structure_counts: dict[str, int] = {}
     for r in records.values():
@@ -584,7 +587,7 @@ def process_case(ct_path: Path, output_dir: Path, case_id: str, *, model: Path =
         "perads_grade": result["perads_grade"],
         "anatomic_level": result["anatomic_level"],
         "most_proximal_structures": "+".join(result["most_proximal_structures"]),
-        "embolic_voxels_hardmask": result["embolic_voxels_hardmask"],
+        "embolic_voxels": result["embolic_voxels"],
         "bcv_mm3": result["bcv_mm3"],
         "classification_reason": result["classification_reason"],
         "rv_lv_ratio": round(result["rv_lv_ratio"], 4) if result["rv_lv_ratio"] is not None else None,
@@ -600,7 +603,7 @@ def process_case(ct_path: Path, output_dir: Path, case_id: str, *, model: Path =
 
 
 CSV_FIELDNAMES = ["case_id", "perads_grade", "anatomic_level", "most_proximal_structures",
-                  "embolic_voxels_hardmask", "bcv_mm3", "classification_reason",
+                  "embolic_voxels", "bcv_mm3", "classification_reason",
                   "rv_lv_ratio", "rv_diameter_mm", "lv_diameter_mm", "num_branches", "duration_sec"]
 
 

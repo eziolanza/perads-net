@@ -26,15 +26,17 @@ accompanying publication.
    arteries grid (pure-translation offset recovered from the NIfTI
    affines).
 5. **Named-artery classification**: a skan branch-tree over the
-   pulmonary arteries, named-structure assignment per branch, hard-mask
-   embolus intersection, a 30 mm³ minimum embolus volume, and
-   overlap-hierarchy grading (the most proximal PE-RADS class holding
-   ≥1% of the embolus volume).
+   pulmonary arteries, named-structure assignment per branch, a 30 mm³
+   minimum embolus volume, and overlap-hierarchy grading (the most
+   proximal PE-RADS class holding ≥1% of the embolus volume). The raw
+   nnU-Net prediction is used directly for volume and grading; anatomic
+   siting still only counts voxels that overlap the named-structure
+   labelmap, which is itself nonzero only inside the artery tree.
 6. **RV/LV ratio**, four-chamber method, on the full-resolution CT and
    heart-chamber masks.
 7. Per case: `result.json`, `structure_labelmap.nii.gz`, and one row
    appended to a CSV (`case_id, perads_grade, anatomic_level,
-   most_proximal_structures, embolic_voxels_hardmask, bcv_mm3,
+   most_proximal_structures, embolic_voxels, bcv_mm3,
    classification_reason, rv_lv_ratio, rv_diameter_mm, lv_diameter_mm,
    num_branches, duration_sec`).
 
