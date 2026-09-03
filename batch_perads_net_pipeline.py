@@ -52,6 +52,10 @@ def main() -> None:
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--folds", nargs="+", type=int, default=[0, 1, 2, 3, 4])
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--skip-rvlv", action="store_true",
+                        help="Skip heartchambers_highres and RV/LV ratio calculation entirely "
+                             "(PE-RADS grade only). Avoids the TotalSegmentator heartchambers_highres "
+                             "license requirement -- see README.")
     args = parser.parse_args()
 
     cases = load_manifest(args.manifest) if args.manifest else scan_directory(args.input_dir)
@@ -70,7 +74,7 @@ def main() -> None:
         futures = {
             pool.submit(process_case, ct_path, output_root / case_id, case_id,
                        model=args.model, device=args.device, folds=args.folds,
-                       overwrite=args.overwrite): case_id
+                       overwrite=args.overwrite, skip_rvlv=args.skip_rvlv): case_id
             for ct_path, case_id in cases
         }
         for future in as_completed(futures):

@@ -364,7 +364,7 @@ def create_preview(ct_4ch: np.ndarray, rv_4ch: np.ndarray, lv_4ch: np.ndarray,
     ax.plot(triangle_points[:,0],triangle_points[:,1],color="#a78bfa",linewidth=3,
             linestyle=":",alpha=.9)
     ax.set_title(
-        f"V3 4CH | RV {metrics['rv_chord']['length_mm']:.1f} mm | "
+        f"RV {metrics['rv_chord']['length_mm']:.1f} mm | "
         f"LV {metrics['lv_chord']['length_mm']:.1f} mm | RV/LV {metrics['ratio_four_chamber']:.2f}",
         color="white", fontsize=11,
     )

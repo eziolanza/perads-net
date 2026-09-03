@@ -6,10 +6,13 @@ ratio out, in one process, one CSV row.
 
 Steps: TotalSegmentator (lung_vessels, heartchambers_highres, total -rs
 5-lobes) on the raw CT -> crop once for nnU-Net -> nnU-Net 5-fold embolus
-segmentation (30mm3 minimum volume) -> named-artery branch-tree
+segmentation (70mm3 minimum volume) -> named-artery branch-tree
 PE-RADS classification (main pulmonary trunk / right or left PA / lobar /
 segmental / subsegmental, per lung lobe) -> four-chamber RV/LV ratio ->
 result.json + structure_labelmap.nii.gz + one CSV row.
+
+RV/LV requires a free TotalSegmentator license for heartchambers_highres
+(see README). Pass --skip-rvlv to run PE-RADS grading only, without it.
 
 Every TotalSegmentator task runs on the SAME raw CT, so the arteries, lobe
 and heart-chamber masks are all natively co-registered with each other and
@@ -50,7 +53,12 @@ DEFAULT_MODEL = Path(os.environ.get(
     "models/Dataset547_PEArteryPriorCrop/nnUNetTrainer__nnUNetPlans__3d_fullres",
 ))
 
-MIN_EMBOLUS_VOLUME_MM3 = 30.0
+# Raised from 30 to 70 mm3 on 03/09/2026: after the hard-mask removal, 30mm3
+# let too many spurious extra-arterial predictions on RSNA-negative exams
+# cross threshold (Atlas-scale false positives 9.1%->15.4%); 70mm3 recovers
+# most of that specificity at negligible cost to Dataset120 reader agreement
+# (61.3%/91.6% unchanged, only 1/119 case affected). See KNOWN_LIMITATIONS.md #6.
+MIN_EMBOLUS_VOLUME_MM3 = 70.0
 OVERLAP = 0.01
 MIN_BRANCH_LENGTH_MM = 3.0
 LOBE_DILATION_ITERATIONS = 3
@@ -479,7 +487,7 @@ def compute_grade_with_named_site(labelmap: np.ndarray, embolus: np.ndarray,
 def process_case(ct_path: Path, output_dir: Path, case_id: str, *, model: Path = DEFAULT_MODEL,
                  device: str = "cuda", folds: list[int] | None = None,
                  totalsegmentator: str = "TotalSegmentator", nnunet: str = "nnUNetv2_predict_from_modelfolder",
-                 overwrite: bool = False) -> dict:
+                 overwrite: bool = False, skip_rvlv: bool = False) -> dict:
     folds = folds if folds is not None else [0, 1, 2, 3, 4]
     t0 = time.time()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -497,7 +505,11 @@ def process_case(ct_path: Path, output_dir: Path, case_id: str, *, model: Path =
 
     heart_masks = [ts_heart / f"heart_{n}.nii.gz" for n in
                    ("atrium_right", "atrium_left", "ventricle_right", "ventricle_left")]
-    if not all(p.exists() for p in heart_masks):
+    if not skip_rvlv and not all(p.exists() for p in heart_masks):
+        # heartchambers_highres requires a free TotalSegmentator license
+        # (request at https://backend.totalsegmentator.com/license-academic/)
+        # -- see README "RV/LV ratio (optional)" for details and how to
+        # skip this step entirely with --skip-rvlv.
         cmd = [totalsegmentator, "-i", str(ct_path), "-o", str(ts_heart), "-ta", "heartchambers_highres"]
         if os.environ.get("PERADS_TOTALSEG_NO_DEVICE") != "1": cmd += ["-d", ts_device]
         run(cmd)
@@ -560,9 +572,13 @@ def process_case(ct_path: Path, output_dir: Path, case_id: str, *, model: Path =
 
     # Step 6 -- RV/LV v3, on the full-res CT + full-res heart chamber masks
     # (its native expected input -- unchanged from run_perads_case.py).
-    rvlv_dir = output_dir / "rv_lv"
-    ra, la, rv, lv = heart_masks
-    rvlv = calculate_rvlv(ct_path, ra, la, rv, lv, case_id, rvlv_dir)
+    # Skipped entirely with --skip-rvlv (no heartchambers_highres license needed).
+    if skip_rvlv:
+        rvlv = {"ratio_four_chamber": None, "rv_chord": {"length_mm": None}, "lv_chord": {"length_mm": None}}
+    else:
+        rvlv_dir = output_dir / "rv_lv"
+        ra, la, rv, lv = heart_masks
+        rvlv = calculate_rvlv(ct_path, ra, la, rv, lv, case_id, rvlv_dir)
 
     # Step 7 -- write outputs.
     final = output_dir / "results"; final.mkdir(parents=True, exist_ok=True)
@@ -619,6 +635,10 @@ def main() -> None:
     parser.add_argument("--totalsegmentator", default=os.environ.get("PERADS_TOTALSEGMENTATOR", "TotalSegmentator"))
     parser.add_argument("--nnunet", default=os.environ.get("PERADS_NNUNET", "nnUNetv2_predict_from_modelfolder"))
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--skip-rvlv", action="store_true",
+                        help="Skip heartchambers_highres and RV/LV ratio calculation entirely "
+                             "(PE-RADS grade only). Avoids the TotalSegmentator heartchambers_highres "
+                             "license requirement -- see README.")
     args = parser.parse_args()
 
     ct_path = args.input.resolve(); output = args.output.resolve()
@@ -627,7 +647,8 @@ def main() -> None:
     if not args.model.is_dir(): parser.error(f"nnU-Net model not found: {args.model}")
 
     row = process_case(ct_path, output, case_id, model=args.model, device=args.device, folds=args.folds,
-                       totalsegmentator=args.totalsegmentator, nnunet=args.nnunet, overwrite=args.overwrite)
+                       totalsegmentator=args.totalsegmentator, nnunet=args.nnunet, overwrite=args.overwrite,
+                       skip_rvlv=args.skip_rvlv)
 
     csv_path = args.csv or (output / "result.csv")
     write_header = not csv_path.exists()
