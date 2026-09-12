@@ -60,6 +60,15 @@ DEFAULT_MODEL = Path(os.environ.get(
 # (61.3%/91.6% unchanged, only 1/119 case affected). See KNOWN_LIMITATIONS.md #6.
 MIN_EMBOLUS_VOLUME_MM3 = 70.0
 OVERLAP = 0.01
+# 2026-09-12: a small speck (just above MIN_EMBOLUS_VOLUME_MM3) that happens
+# to sit in the main/right/left pulmonary artery was being labeled grade 4
+# ("massive/central PE" by definition) purely by location, not volume --
+# 51/99 false positives in the embolia2011 validation were grade-4 specks
+# with median BCV far below true grade-4 cases (median 2928mm3). Grade 4
+# now additionally requires its own class-4 component to clear this floor;
+# below it, that component is stripped out and the case is reclassified on
+# whatever embolus remains (Youden J 0.654->0.660 on the validation cohort).
+MIN_CLASS4_VOLUME_MM3 = 150.0
 MIN_BRANCH_LENGTH_MM = 3.0
 LOBE_DILATION_ITERATIONS = 3
 PE_CLASS_NAMES = {4: "main_right_left", 3: "lobar", 2: "segmental", 1: "subsegmental"}
@@ -438,6 +447,30 @@ def compute_perads_grade(embolus: np.ndarray, perads_labelmap: np.ndarray,
         grade = next((c for c in (4, 3, 2, 1) if fractions[c] >= OVERLAP), 0)
         reason = "overlap_hierarchy"
 
+    # grade-4 floor: the class-4 (main/right/left PA) component itself must
+    # clear MIN_CLASS4_VOLUME_MM3, or it's a small speck sited centrally by
+    # chance, not a true massive/central PE -- strip it out and reclassify
+    # on whatever embolus remains.
+    if grade == 4:
+        class4_mask = perads_labelmap == 4
+        class4_voxels = int((embolus & class4_mask).sum())
+        class4_bcv_mm3 = class4_voxels * voxel_volume_mm3
+        if class4_bcv_mm3 < MIN_CLASS4_VOLUME_MM3:
+            embolus_remaining = embolus & ~class4_mask
+            total_r = int(embolus_remaining.sum())
+            bcv_r = total_r * voxel_volume_mm3
+            if bcv_r < MIN_EMBOLUS_VOLUME_MM3:
+                grade, reason = 0, "class4_component_below_minimum_remainder_below_threshold"
+                fractions = {c: 0.0 for c in (4, 3, 2, 1)}
+            else:
+                fractions_r = {c: (int((embolus_remaining & (perads_labelmap == c)).sum()) / total_r if total_r else 0.0)
+                               for c in (3, 2, 1)}
+                fractions_r[4] = 0.0
+                grade = next((c for c in (3, 2, 1) if fractions_r[c] >= OVERLAP), 0)
+                reason = "class4_component_below_minimum_reclassified" if grade else "class4_component_below_minimum_remainder_below_threshold"
+                fractions = fractions_r
+            total, bcv_mm3 = total_r, bcv_r
+
     return {
         'perads_grade': grade,
         'anatomic_level': PE_CLASS_NAMES.get(grade, "none"),
@@ -447,6 +480,7 @@ def compute_perads_grade(embolus: np.ndarray, perads_labelmap: np.ndarray,
         'voxel_volume_mm3': round(voxel_volume_mm3, 6),
         'minimum_embolus_volume_mm3': MIN_EMBOLUS_VOLUME_MM3,
         'minimum_embolus_overlap_fraction': OVERLAP,
+        'minimum_class4_volume_mm3': MIN_CLASS4_VOLUME_MM3,
         'class_fractions': {str(c): round(f, 5) for c, f in fractions.items()},
     }
 
