@@ -72,6 +72,18 @@ MIN_CLASS4_VOLUME_MM3 = 150.0
 MIN_BRANCH_LENGTH_MM = 3.0
 LOBE_DILATION_ITERATIONS = 3
 PE_CLASS_NAMES = {4: "main_right_left", 3: "lobar", 2: "segmental", 1: "subsegmental"}
+# 2026-09-15: cases where total predicted embolus volume clears
+# MIN_EMBOLUS_VOLUME_MM3 but none of that volume overlaps any named
+# arterial structure in the PE-RADS labelmap (fractions all 0 for classes
+# 4/3/2/1) were silently defaulting to grade 0 -- i.e. treated as clean
+# negatives -- even though there is a substantial, real prediction mass
+# the pipeline simply cannot anatomically site (segmentation extending
+# outside the mapped arterial tree, or a labelmap/embolus registration
+# mismatch). These are not equivalent to a true negative: flag them
+# instead as suspected PE of indeterminate site ("X") so they surface for
+# radiologist review rather than being counted as algorithm negatives.
+PERADS_GRADE_X = "X"
+PE_CLASS_NAMES[PERADS_GRADE_X] = "suspected_unmapped_embolus"
 
 LOBES_RIGHT = ["lung_upper_lobe_right", "lung_middle_lobe_right", "lung_lower_lobe_right"]
 LOBES_LEFT = ["lung_upper_lobe_left", "lung_lower_lobe_left"]
@@ -445,7 +457,10 @@ def compute_perads_grade(embolus: np.ndarray, perads_labelmap: np.ndarray,
         grade, reason = 0, "below_minimum_embolus_volume"
     else:
         grade = next((c for c in (4, 3, 2, 1) if fractions[c] >= OVERLAP), 0)
-        reason = "overlap_hierarchy"
+        if grade == 0:
+            grade, reason = PERADS_GRADE_X, "suspected_unmapped_volume"
+        else:
+            reason = "overlap_hierarchy"
 
     # grade-4 floor: the class-4 (main/right/left PA) component itself must
     # clear MIN_CLASS4_VOLUME_MM3, or it's a small speck sited centrally by
@@ -467,7 +482,10 @@ def compute_perads_grade(embolus: np.ndarray, perads_labelmap: np.ndarray,
                                for c in (3, 2, 1)}
                 fractions_r[4] = 0.0
                 grade = next((c for c in (3, 2, 1) if fractions_r[c] >= OVERLAP), 0)
-                reason = "class4_component_below_minimum_reclassified" if grade else "class4_component_below_minimum_remainder_below_threshold"
+                if grade:
+                    reason = "class4_component_below_minimum_reclassified"
+                else:
+                    grade, reason = PERADS_GRADE_X, "class4_component_below_minimum_unmapped_remainder"
                 fractions = fractions_r
             total, bcv_mm3 = total_r, bcv_r
 
@@ -500,7 +518,7 @@ def compute_grade_with_named_site(labelmap: np.ndarray, embolus: np.ndarray,
     grade = grade_info["perads_grade"]
 
     named_sites = []
-    if grade > 0:
+    if isinstance(grade, int) and grade > 0:
         for name, cls in PERADS_CLASS.items():
             if cls != grade:
                 continue
