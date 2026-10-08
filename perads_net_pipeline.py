@@ -261,12 +261,10 @@ def find_root_node(G: nx.Graph):
     return max(endpoints, key=edge_radius)
 
 
-def side_of_subtree(di: nx.DiGraph, u, v, lung_right: np.ndarray, lung_left: np.ndarray,
-                    image_mid_x: float) -> str:
-    """Side of edge (u, v), decided by AGGREGATE lung-mask overlap over that
-    edge PLUS its entire descendant subtree (not just its own short proximal
-    segment -- the RPA runs posterior to the ascending aorta before curving
-    right, so a single edge right after the split can be ambiguous)."""
+def subtree_lung_overlap(di: nx.DiGraph, u, v, lung_right: np.ndarray,
+                         lung_left: np.ndarray) -> tuple[int, int, float]:
+    """Aggregate right/left lung-mask overlap (voxel counts) and mean voxel-x
+    over edge (u, v) PLUS its entire descendant subtree."""
     right_total = left_total = 0
     xs = []
     stack = [(u, v)]
@@ -278,11 +276,47 @@ def side_of_subtree(di: nx.DiGraph, u, v, lung_right: np.ndarray, lung_left: np.
         xs.append(pv[:, 0])
         for child in di.successors(b):
             stack.append((b, child))
+    return right_total, left_total, (float(np.concatenate(xs).mean()) if xs else float("nan"))
 
+
+def side_of_subtree(di: nx.DiGraph, u, v, lung_right: np.ndarray, lung_left: np.ndarray,
+                    image_mid_x: float) -> str:
+    """Side of edge (u, v), decided by AGGREGATE lung-mask overlap over that
+    edge PLUS its entire descendant subtree (not just its own short proximal
+    segment -- the RPA runs posterior to the ascending aorta before curving
+    right, so a single edge right after the split can be ambiguous)."""
+    right_total, left_total, mean_x = subtree_lung_overlap(di, u, v, lung_right, lung_left)
     if right_total == 0 and left_total == 0:
-        mean_x = np.concatenate(xs).mean() if xs else image_mid_x
+        # voxel-x fallback, only meaningful for a mask whose first axis runs
+        # right-to-left; lung-mask overlap above is orientation-independent.
+        mean_x = image_mid_x if np.isnan(mean_x) else mean_x
         return "right" if mean_x < image_mid_x else "left"
     return "right" if right_total >= left_total else "left"
+
+
+# A subtree whose minority lung holds at least this share of its lung-mask
+# overlap still feeds BOTH lungs, i.e. it is the trunk continuing past a
+# spurious skeleton spur, not the right or left pulmonary artery yet.
+BILATERAL_SUBTREE_MIN_FRACTION = 0.15
+
+# PE-RADS v2026 (Koweek et al.) / RSNA-PE "central PE": the right and left
+# pulmonary arteries end at the takeoff of the upper-lobe artery; the
+# continuation beyond it (interlobar artery / basal trunk) is already lobar
+# (class 3). A child subtree counts as the upper-lobe branch when at least
+# this share of its centerline lies in the (dilated) upper lobe and it is at
+# least UPPER_LOBE_BRANCH_MIN_MM long (excludes skeleton spurs).
+UPPER_LOBE_BRANCH_MIN_FRACTION = 0.5
+UPPER_LOBE_BRANCH_MIN_MM = 20.0
+UPPER_LOBE = {"right": "lung_upper_lobe_right", "left": "lung_upper_lobe_left"}
+
+
+def subtree_length_mm(di: nx.DiGraph, u, v) -> float:
+    total, stack = 0.0, [(u, v)]
+    while stack:
+        a, b = stack.pop()
+        total += di.edges[a, b]['length_mm']
+        stack.extend((b, c) for c in di.successors(b))
+    return total
 
 
 def lobe_overlap_of_subtree(di: nx.DiGraph, u, v, lobe_masks: dict[str, np.ndarray],
@@ -353,16 +387,62 @@ def classify_named_structures(G: nx.Graph, root, lung_right: np.ndarray, lung_le
     CONTINUATION_RATIO = 0.75
     HIGH_CONFIDENCE = 0.50
 
+    takeoff_cache: dict = {}
+
+    def pa_ends_at(u, side) -> bool:
+        """True when node u is the upper-lobe takeoff: one child subtree is
+        upper-lobe territory and another (the interlobar continuation) is
+        not, both longer than a skeleton spur."""
+        if u not in takeoff_cache:
+            lobe_names = LOBES_RIGHT if side == "right" else LOBES_LEFT
+            ul, other = False, False
+            for c in di.successors(u):
+                if subtree_length_mm(di, u, c) < UPPER_LOBE_BRANCH_MIN_MM:
+                    continue
+                frac = lobe_overlap_of_subtree(di, u, c, lobe_masks, lobe_names)[UPPER_LOBE[side]]
+                if frac >= UPPER_LOBE_BRANCH_MIN_FRACTION:
+                    ul = True
+                else:
+                    other = True
+            takeoff_cache[u] = ul and other
+        return takeoff_cache[u]
+
     for u, v in nx.bfs_edges(di, root_child):
         path_voxels = di.edges[u, v]['path_voxels']
         parent = node_state[u]
         side = parent["side"]
+        pa_open = False
+        handled = True
 
         if side is None:
-            side = side_of_subtree(di, u, v, lung_right, lung_left, image_mid_x)
-            name = "RPA" if side == "right" else "LPA"
-            lobe, depth_in_lobe = None, -1
+            r_tot, l_tot, _ = subtree_lung_overlap(di, u, v, lung_right, lung_left)
+            if r_tot + l_tot and min(r_tot, l_tot) / (r_tot + l_tot) >= BILATERAL_SUBTREE_MIN_FRACTION:
+                # Still feeds both lungs: the trunk continues past a skeleton
+                # spur. Locking a side here would push the whole contralateral
+                # lung into "RPA"/"LPA" (class 4) with no lobar labels.
+                name = "main_trunk"
+                lobe, depth_in_lobe = None, -1
+            else:
+                side = side_of_subtree(di, u, v, lung_right, lung_left, image_mid_x)
+                name = "RPA" if side == "right" else "LPA"
+                lobe, depth_in_lobe = None, -1
+                pa_open = True
+        elif parent.get("pa_open") and not pa_ends_at(u, side):
+            # Still proximal to the upper-lobe takeoff: the main continuation
+            # stays RPA/LPA; a side twig with no lobar territory of its own
+            # (mediastinal / skeleton spur) is labeled with it.
+            siblings = list(di.successors(u))
+            cont = max(siblings, key=lambda c: di.edges[u, c]['radius_mean_mm'])
+            ov = lobe_overlap_of_subtree(di, u, v, lobe_masks, LOBES_RIGHT if side == "right" else LOBES_LEFT)
+            if v == cont or max(ov.values()) < HIGH_CONFIDENCE:
+                name = "RPA" if side == "right" else "LPA"
+                lobe, depth_in_lobe = None, -1
+                pa_open = v == cont
+            else:
+                handled = False
         else:
+            handled = False
+        if not handled:
             lobe_names = LOBES_RIGHT if side == "right" else LOBES_LEFT
             total = len(path_voxels)
             overlaps = {ln: float(lobe_masks[ln][tuple(path_voxels.T)].sum()) / total if total else 0.0
@@ -391,11 +471,20 @@ def classify_named_structures(G: nx.Graph, root, lung_right: np.ndarray, lung_le
                     depth_in_lobe = 0 if lobe != parent["lobe"] else parent["depth_in_lobe"] + 1
                     suffix = "artery" if depth_in_lobe == 0 else ("segmental" if depth_in_lobe == 1 else "subsegmental")
                     name = f"{lobe}_{suffix}"
+                elif parent["lobe"] is not None:
+                    # No lobar evidence of its own, but its parent is already
+                    # inside a lobe: stay in that lobe one generation deeper
+                    # rather than reverting to a main pulmonary artery label.
+                    lobe, depth_in_lobe = parent["lobe"], parent["depth_in_lobe"] + 1
+                    suffix = "segmental" if depth_in_lobe == 1 else "subsegmental"
+                    name = f"{lobe}_{suffix}"
                 else:
-                    name = "RPA" if side == "right" else "LPA"
+                    # Past the upper-lobe takeoff with no lobar evidence yet:
+                    # interlobar artery / basal trunk, PE-RADS class 3.
+                    name = "interlobar"
                     lobe, depth_in_lobe = None, -1
 
-        node_state[v] = {"side": side, "lobe": lobe, "depth_in_lobe": depth_in_lobe}
+        node_state[v] = {"side": side, "lobe": lobe, "depth_in_lobe": depth_in_lobe, "pa_open": pa_open}
 
         this_edge_id = edge_id_of[(u, v)]
         incoming_edge_id[v] = this_edge_id
