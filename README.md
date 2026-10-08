@@ -59,8 +59,8 @@ Download the trained model bundle from this repository's GitHub Releases
 page:
 
 ```bash
-wget https://github.com/eziolanza/perads-net/releases/download/v0.2.0/PERADS.net-model-v0.2.0.tar.zst
-tar --use-compress-program=unzstd -xf PERADS.net-model-v0.2.0.tar.zst
+wget https://github.com/eziolanza/perads-net/releases/download/v0.3.0/PERADS.net-model-v0.3.0.tar.zst
+tar --use-compress-program=unzstd -xf PERADS.net-model-v0.3.0.tar.zst
 ```
 
 This extracts an `nnUNetTrainer__nnUNetPlans__3d_fullres/` folder
